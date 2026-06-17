@@ -80,6 +80,7 @@ class SpeechTimerViewModel {
     @ObservationIgnored private var maleVoice: AVSpeechSynthesisVoice?
     @ObservationIgnored private var goBeepPlayer: AVAudioPlayer?
     @ObservationIgnored private var countdownBeepPlayer: AVAudioPlayer?
+    @ObservationIgnored private var abortBeepPlayer: AVAudioPlayer?
     @ObservationIgnored private var silentLoopPlayer: AVAudioPlayer?
     @ObservationIgnored private var voiceChangeToken: NSObjectProtocol?
     @ObservationIgnored private var routeChangeToken: NSObjectProtocol?
@@ -107,6 +108,10 @@ class SpeechTimerViewModel {
         let tickData = Self.makeToneData(hz: 660, seconds: 0.07, amp: 0.5)
         countdownBeepPlayer = try? AVAudioPlayer(data: tickData)
         countdownBeepPlayer?.prepareToPlay()
+
+        let abortData = Self.makeAbortToneData()
+        abortBeepPlayer = try? AVAudioPlayer(data: abortData)
+        abortBeepPlayer?.prepareToPlay()
 
         // Silent loop keeps the AVAudioSession output active while the phone is locked.
         // Without this, iOS blocks new playback starts from the background ('!pla' error).
@@ -215,6 +220,44 @@ class SpeechTimerViewModel {
         return wav
     }
 
+    // Descending two-tone (600 Hz → 400 Hz) used for workout abort — distinct from go/countdown beeps.
+    private static func makeAbortToneData() -> Data {
+        let rate = 44100
+        let fade = max(1, Int(Double(rate) * 0.012))
+        let segments: [(hz: Double, seconds: Double, amp: Float)] = [
+            (600, 0.15, 0.72),
+            (400, 0.22, 0.65),
+        ]
+        var allSamples: [Int16] = []
+        for (hz, seconds, amp) in segments {
+            let frames = Int(Double(rate) * seconds)
+            for i in 0..<frames {
+                var e: Double = 1.0
+                if i < fade { e = Double(i) / Double(fade) }
+                else if i > frames - fade { e = Double(frames - i) / Double(fade) }
+                let s = sin(2 * .pi * hz * Double(i) / Double(rate)) * Double(amp) * e
+                allSamples.append(Int16(max(-32767, min(32767, Int(s * 32767)))))
+            }
+        }
+        let totalFrames = allSamples.count
+        var wav = Data(capacity: 44 + totalFrames * 2)
+        wav.append(contentsOf: "RIFF".utf8)
+        wav.appendLE(UInt32(totalFrames * 2 + 36))
+        wav.append(contentsOf: "WAVE".utf8)
+        wav.append(contentsOf: "fmt ".utf8)
+        wav.appendLE(UInt32(16))
+        wav.appendLE(UInt16(1))
+        wav.appendLE(UInt16(1))
+        wav.appendLE(UInt32(rate))
+        wav.appendLE(UInt32(rate * 2))
+        wav.appendLE(UInt16(2))
+        wav.appendLE(UInt16(16))
+        wav.append(contentsOf: "data".utf8)
+        wav.appendLE(UInt32(totalFrames * 2))
+        for sample in allSamples { wav.appendLE(sample) }
+        return wav
+    }
+
     // MARK: - Voice helpers
 
     private static func pickBestVoice() -> AVSpeechSynthesisVoice? {
@@ -270,6 +313,7 @@ class SpeechTimerViewModel {
         displayTimer?.invalidate()
         displayTimer = nil
         synthesizer.stopSpeaking(at: .immediate)
+        playAbortBeep()
         appState = .idle
         splits = []
         startDate = nil
@@ -407,8 +451,13 @@ class SpeechTimerViewModel {
             #if targetEnvironment(simulator)
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
             #else
+            // .allowBluetoothA2DP only — keeps headphones in high-quality A2DP mode.
+            // Adding .allowBluetooth (HFP) would switch headphones to the 8–16 kbps call
+            // codec for bidirectional audio, which is why Spotify sounded muffled.
+            // Without HFP, iOS uses the built-in phone mic for input, which is fine for
+            // voice commands at arm's length.
             try session.setCategory(.playAndRecord, mode: .default,
-                                    options: [.allowBluetooth, .allowBluetoothA2DP, .duckOthers])
+                                    options: [.allowBluetoothA2DP, .mixWithOthers])
             #endif
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             hasAudioSessionStarted = true
@@ -834,6 +883,11 @@ class SpeechTimerViewModel {
     private func playCountdownBeep() {
         countdownBeepPlayer?.currentTime = 0
         countdownBeepPlayer?.play()
+    }
+
+    private func playAbortBeep() {
+        abortBeepPlayer?.currentTime = 0
+        abortBeepPlayer?.play()
     }
 
     // MARK: - Pace feedback
