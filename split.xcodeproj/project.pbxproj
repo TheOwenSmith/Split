@@ -253,7 +253,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = MF83XY26E8;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Split;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used for voice commands to control your split timer hands-free.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Listens for start, split, and stop voice commands.";
@@ -289,7 +290,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = MF83XY26E8;
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Split;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used for voice commands to control your split timer hands-free.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Listens for start, split, and stop voice commands.";

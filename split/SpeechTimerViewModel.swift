@@ -80,6 +80,7 @@ class SpeechTimerViewModel {
     @ObservationIgnored private var maleVoice: AVSpeechSynthesisVoice?
     @ObservationIgnored private var goBeepPlayer: AVAudioPlayer?
     @ObservationIgnored private var countdownBeepPlayer: AVAudioPlayer?
+    @ObservationIgnored private var silentLoopPlayer: AVAudioPlayer?
     @ObservationIgnored private var voiceChangeToken: NSObjectProtocol?
     @ObservationIgnored private var routeChangeToken: NSObjectProtocol?
     @ObservationIgnored private var engineConfigToken: NSObjectProtocol?
@@ -106,6 +107,13 @@ class SpeechTimerViewModel {
         let tickData = Self.makeToneData(hz: 660, seconds: 0.07, amp: 0.5)
         countdownBeepPlayer = try? AVAudioPlayer(data: tickData)
         countdownBeepPlayer?.prepareToPlay()
+
+        // Silent loop keeps the AVAudioSession output active while the phone is locked.
+        // Without this, iOS blocks new playback starts from the background ('!pla' error).
+        let silentData = Self.makeToneData(hz: 1, seconds: 0.5, amp: 0)
+        silentLoopPlayer = try? AVAudioPlayer(data: silentData)
+        silentLoopPlayer?.numberOfLoops = -1
+        silentLoopPlayer?.volume = 0
 
         synthesizer.delegate = synthDelegate
 
@@ -151,12 +159,14 @@ class SpeechTimerViewModel {
             switch type {
             case .began:
                 self.log("Audio session interrupted")
+                self.silentLoopPlayer?.pause()
                 if self.audioEngine.isRunning { self.audioEngine.stop() }
                 self.audioEngine.inputNode.removeTap(onBus: 0)
                 self.isListening = false
             case .ended:
                 self.log("Audio session interruption ended — resuming mic")
                 try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+                self.silentLoopPlayer?.play()
                 if !self.isMuted && self.hasAudioSessionStarted { self.beginRecognition() }
             @unknown default: break
             }
@@ -403,6 +413,8 @@ class SpeechTimerViewModel {
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             hasAudioSessionStarted = true
             checkAudioRoute()
+            silentLoopPlayer?.prepareToPlay()
+            silentLoopPlayer?.play()
             log("Audio session ready")
         } catch {
             log("Audio session failed: \(error.localizedDescription)")
