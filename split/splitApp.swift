@@ -1,17 +1,13 @@
-//
-//  splitApp.swift
-//  split
-//
-//  Created by Lauren Jurgens on 6/16/26.
-//
-
 import SwiftUI
 
 @main
 struct splitApp: App {
+    @State private var store = WorkoutStore()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(store)
         }
     }
 }
