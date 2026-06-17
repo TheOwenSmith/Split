@@ -77,6 +77,7 @@ class SpeechTimerViewModel {
     private let synthesizer = AVSpeechSynthesizer()
     private let synthDelegate = SpeechSynthesizerDelegate()
 
+    @ObservationIgnored private var wordSubstitutions: [String: String] = [:]
     @ObservationIgnored private var maleVoice: AVSpeechSynthesisVoice?
     @ObservationIgnored private var goBeepPlayer: AVAudioPlayer?
     @ObservationIgnored private var countdownBeepPlayer: AVAudioPlayer?
@@ -98,14 +99,15 @@ class SpeechTimerViewModel {
 
     init() {
         maleVoice = Self.pickBestVoice()
+        wordSubstitutions = Self.loadWordSubstitutions()
 
         // Build beep players from synthesized PCM audio (plays through AirPods via AVAudioSession).
         // Both start and rest-end use the same go-beep; countdown uses a softer tick.
-        let goData = Self.makeToneData(hz: 880, seconds: 0.2, amp: 0.75)
+        let goData = Self.makeToneData(hz: 880, seconds: 0.2, amp: 1.0)
         goBeepPlayer = try? AVAudioPlayer(data: goData)
         goBeepPlayer?.prepareToPlay()
 
-        let tickData = Self.makeToneData(hz: 660, seconds: 0.07, amp: 0.5)
+        let tickData = Self.makeToneData(hz: 660, seconds: 0.07, amp: 0.85)
         countdownBeepPlayer = try? AVAudioPlayer(data: tickData)
         countdownBeepPlayer?.prepareToPlay()
 
@@ -225,8 +227,8 @@ class SpeechTimerViewModel {
         let rate = 44100
         let fade = max(1, Int(Double(rate) * 0.012))
         let segments: [(hz: Double, seconds: Double, amp: Float)] = [
-            (600, 0.15, 0.72),
-            (400, 0.22, 0.65),
+            (600, 0.15, 0.92),
+            (400, 0.22, 0.82),
         ]
         var allSamples: [Int16] = []
         for (hz, seconds, amp) in segments {
@@ -256,6 +258,20 @@ class SpeechTimerViewModel {
         wav.appendLE(UInt32(totalFrames * 2))
         for sample in allSamples { wav.appendLE(sample) }
         return wav
+    }
+
+    // MARK: - Word substitution
+
+    // WordSubstitutions.json: { "misrecognized": "intended_command" }
+    // Valid target commands: start, split, stop, skip, pause, resume
+    // Example: { "spot": "split", "dart": "start", "stob": "stop" }
+    private static func loadWordSubstitutions() -> [String: String] {
+        guard let url = Bundle.main.url(forResource: "WordSubstitutions", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let dict = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+        return dict
     }
 
     // MARK: - Voice helpers
@@ -367,7 +383,7 @@ class SpeechTimerViewModel {
             restTimer?.invalidate()
             // Only include thresholds that haven't fired yet (strictly less than remaining).
             var beepThresholds = [3.0, 2.0, 1.0].filter { $0 < remaining }
-            restTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            restTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [weak self] _ in
                 guard let self, self.appState == .resting, !self.restIsPaused,
                       let start = self.restStartDate else { return }
                 let rem = max(0, remaining - Date().timeIntervalSince(start))
@@ -404,8 +420,9 @@ class SpeechTimerViewModel {
         refreshDisplayTime()
         statusText = "Cancelled"
 
-        guard !splits.isEmpty else { return }
+        playAbortBeep()
         synthesizer.stopSpeaking(at: .immediate)
+        guard !splits.isEmpty else { return }
         speakNow("Workout cancelled. Completed \(splits.count) of \(workoutItems.filter { $0.isInterval }.count) reps.")
         for split in splits {
             speakQueued("\(split.distanceLabel): \(timeToSpeech(split.lapTime))", delay: 0.35)
@@ -576,7 +593,8 @@ class SpeechTimerViewModel {
     // MARK: - Command processing
 
     private func processWord(_ word: String) {
-        let w = word.trimmingCharacters(in: .punctuationCharacters)
+        let trimmed = word.trimmingCharacters(in: .punctuationCharacters)
+        let w = wordSubstitutions[trimmed] ?? trimmed
         switch w {
         case "start":
             if appState == .resting {
@@ -611,8 +629,10 @@ class SpeechTimerViewModel {
             }
         case "skip":
             if appState == .resting { log("Command: SKIP"); skipRest() }
-        case "pause", "resume", "unpause":
-            if appState == .resting { log("Command: PAUSE/RESUME"); togglePauseRest() }
+        case "pause":
+            if appState == .resting && !restIsPaused { log("Command: PAUSE"); togglePauseRest() }
+        case "resume", "unpause":
+            if appState == .resting && restIsPaused { log("Command: RESUME"); togglePauseRest() }
         default:
             break
         }
@@ -757,11 +777,8 @@ class SpeechTimerViewModel {
         scheduleRestWarningsAndBeeps(remaining: duration)
 
         restTimer?.invalidate()
-        // Fire beeps when remaining crosses below each threshold. Threshold-crossing (not
-        // integer-floor) guarantees the 1.0 beep fires even if a 0.1s tick happens to land at
-        // remaining=0.95 and skips the 1.0 mark entirely.
         var beepThresholds = [3.0, 2.0, 1.0]
-        restTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        restTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [weak self] _ in
             guard let self, self.appState == .resting, !self.restIsPaused,
                   let start = self.restStartDate, self.restGeneration == gen else { return }
             let remaining = max(0, duration - Date().timeIntervalSince(start))
@@ -922,8 +939,12 @@ class SpeechTimerViewModel {
     }
 
     func formatTime(_ t: TimeInterval) -> String {
-        let m = Int(t) / 60, s = Int(t) % 60
-        let h = Int((t * 100).truncatingRemainder(dividingBy: 100))
+        // Round to nearest centisecond before integer arithmetic to avoid floating-point
+        // floor errors (e.g. 14.9 * 100 = 1489.999… → Int() = 1489 → shows ".X9" always).
+        let totalCS = Int((t * 100).rounded())
+        let m = totalCS / 6000
+        let s = (totalCS / 100) % 60
+        let h = totalCS % 100
         return String(format: "%d:%02d.%02d", m, s, h)
     }
 
